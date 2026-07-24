@@ -68,17 +68,30 @@ ECharts 實例快取於 `app.js` 的 `instances` 物件，透過 `setOption(...,
 
 直接使用 **Google Identity Services**（`google.accounts.oauth2.initTokenClient`），不使用 `gapi.client`。權杖只放在記憶體中的 `gtoken`，每次呼叫 Sheets API 時透過 `Authorization: Bearer` 帶入。`Sheets.apiGet` 遇到 401 視為權杖過期並丟出 `{code: 401}`，由 `app.js` 攔截後交給 `handleAuthError()` 決定續發或重新登入（見下）。scope 為 `openid email https://www.googleapis.com/auth/spreadsheets.readonly` — 後兩者分別用來拿使用者 email（做應用層白名單）與唯讀讀取試算表。
 
-### 7 天內免重新登入（靜默續發）
+### 重整頁面不掉線（Token 快取 + 7 天視窗）
 
-Google 給的 access token 本身只活約 1 小時，所以「使用者 7 天內不用重新登入」的實作方式是靠 `localStorage` 記一個 7 天的 session 戳，配合 GIS 的靜默續發（`requestAccessToken({ prompt: "" })`）：
+Google 給的 access token 本身只活約 1 小時。為了讓使用者「重整頁面不用重新登入」，實作採**兩層機制**：
 
-- `SESSION_KEY = "boxful_authz_expires_at"`，`SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000`。**只存過期時間戳，不存 access token 本身**（避免 XSS 直接偷到 token）。
-- `initAuth()` 建立完 `tokenClient` 後，若 `sessionValid()` 為真就立刻呼叫 `requestAccessToken({ prompt: "" })` 靜默取得新 token；否則顯示登入畫面等使用者手動點按鈕。
-- 每次 token callback 成功都會 `markSession()` 把 7 天視窗往後推（滑動視窗式）。
-- `handleAuthError()` 是 401 的統一處理：若 session 仍有效就靜默續發、失敗才 fallback 到 `showLogin`。`load()` 與 `authorizeAndLoad()` 的兩個 `catch` 都走這條路徑，不會直接 `showLogin`。
-- `error_callback` 觸發時（Google 側撤銷、瀏覽器沒 Google session 等）會 `clearSession()`，因為靜默續發都失敗代表授權層已斷。
-- `showUnauthorized` 的「改用其他帳號登入」按鈕會 `clearSession()` 並用 `prompt: "consent"` 強制彈選帳號視窗。
-- `localStorage` 被瀏覽器禁用時（隱私模式的某些設定），`markSession` / `clearSession` 的 `try/catch` 會靜默吞掉例外 — 只是退化為單次登入，其他流程照跑。
+**主機制：`TOKEN_KEY` — access token 快取（`localStorage`）**
+
+- 存 `{ token, expiresAt }` 到 `localStorage["boxful_gtoken"]`。
+- `initAuth()` 頁面載入時**優先讀快取**：只要 token 未過期（有 30 秒 skew 緩衝）就直接用，**根本不打 Google**。這是重整不掉線的核心 —— 不依賴任何瀏覽器策略、不用第三方 Cookie、不用使用者手勢。
+- 為什麼可以存 token：本站為純靜態頁、無使用者輸入、無第三方腳本，XSS 面幾乎為零；scope 只有唯讀 Sheets + 使用者 email，實務風險可接受。
+
+**加碼機制：`SESSION_KEY` — 7 天視窗戳（`localStorage`）**
+
+- `SESSION_KEY = "boxful_authz_expires_at"`，`SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000`。只存過期時間戳，不存 token 本身。
+- Token 過期（或首次進站沒有快取）時，如果 7 天視窗還有效，就試 GIS 的靜默續發（`requestAccessToken({ prompt: "" })`）取新 token；靜默續發失敗才 fallback 到手動登入畫面。
+- 靜默續發只是**加碼**、不是必要路徑：現代瀏覽器封鎖第三方 Cookie、或頁面自動呼叫缺乏使用者手勢時，靜默續發常常會失敗。所以絕對不能只靠它。
+
+**流程**
+
+- `initAuth()` 建完 `tokenClient` 後，依序：**有效 token 快取** → 直接用；否則 **`sessionValid()`** → 試靜默續發；再否則 → `showLogin()`。
+- Token callback 成功時同時 `writeCachedToken()` 與 `markSession()`，把兩層都更新。
+- `handleAuthError()` 是 401 的統一處理：先 `clearCachedToken()`，再看 `sessionValid()` 決定靜默續發或 `showLogin`。`load()` 與 `authorizeAndLoad()` 的兩個 `catch` 都走這條路徑，不會直接 `showLogin`。
+- `error_callback` 觸發時只 `clearCachedToken()`；**不動 session 視窗**，避免「一次靜默續發失敗就把 7 天視窗砍掉、之後每次重整都要重登」的迴圈。
+- `showUnauthorized` 的「改用其他帳號登入」按鈕會 `clearCachedToken() + clearSession()`，並用 `prompt: "consent"` 強制彈選帳號視窗。
+- `localStorage` 被瀏覽器禁用時（隱私模式的某些設定），各 setter 的 `try/catch` 會靜默吞掉例外 — 只是退化為單次登入，其他流程照跑。
 
 ### 應用層權限白名單（重要）
 
