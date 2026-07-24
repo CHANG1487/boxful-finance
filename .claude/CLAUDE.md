@@ -1,88 +1,88 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本檔提供給後續在此 repo 工作的 Claude Code（claude.ai/code）作為快速上手指南。
 
-## What this is
+## 這是什麼
 
-A **static, browser-only** dashboard that reads a BOXFUL P&L Google Sheet at runtime via the user's Google OAuth token and renders KPIs, a rules-based Chinese-language summary, an anomaly list, and ~10 ECharts charts. There is **no backend, no build step, no package manager, and no tests**. All UI text, comments, and configuration are Traditional Chinese (zh-Hant).
+一份**純瀏覽器端的靜態儀表板**：登入後以使用者的 Google OAuth 權杖直接讀取 BOXFUL 損益 Google Sheet，即時渲染 KPI、規則式中文重點摘要、異常清單，以及約 10 張 ECharts 圖表。**沒有後端、沒有建置流程、沒有套件管理、沒有測試**。所有 UI 文字、程式碼註解與設定皆為繁體中文（zh-Hant）。
 
-## Running it
+## 如何啟動
 
-Because it uses Google OAuth (GIS) and calls the Sheets API from the browser, it must be served from an HTTP origin that is whitelisted in the OAuth client — `file://` will not work.
+因為使用 Google Identity Services（GIS）並在瀏覽器端呼叫 Sheets API，**必須從一個已加入 OAuth 白名單的 HTTP 來源提供服務**，`file://` 不會運作。
 
 ```bash
-python3 -m http.server 8000   # then open http://localhost:8000
+python3 -m http.server 8000   # 然後開啟 http://localhost:8000
 ```
 
-For any real deployment (e.g. GitHub Pages), the origin must be added to the OAuth client's *Authorized JavaScript origins* in GCP.
+正式部署（例如 GitHub Pages）時，該來源網址必須被加到 GCP OAuth 用戶端的「已授權的 JavaScript 來源」。
 
-Before it can load data, `config.js` must have a real `OAUTH_CLIENT_ID` (the placeholder string ships as-is), the signed-in Google account must have viewer access to the spreadsheet, and Google Sheets API must be enabled in the GCP project. These preconditions and the fixes are already surfaced to the user in `app.js`'s `showError` panel — mirror that wording when adding new error paths.
+在能載入資料前，還必須：`config.js` 內填入真實的 `OAUTH_CLIENT_ID`（預設值只是佔位字串）、登入的 Google 帳號有這份試算表的檢視權限、GCP 專案已啟用 Google Sheets API。這些前置條件與修正方式在 `app.js` 的 `showError` 面板已經對使用者呈現，新增錯誤路徑時請比照該面板的用詞。
 
-## Architecture
+## 架構
 
-Four JS files loaded as `<script>` tags in `index.html`. Each exposes exactly one global; there is **no module system**:
+四個 JS 檔以 `<script>` 標籤在 `index.html` 依序載入，各自掛一個全域物件；**沒有模組系統**：
 
-| File | Global | Responsibility |
+| 檔案 | 全域 | 職責 |
 |---|---|---|
-| `config.js` | `window.CONFIG` | Sole hand-maintained knobs: spreadsheet ID, OAuth client ID, Top-N, segment list, anomaly thresholds. |
-| `sheets.js` | `window.Sheets` | OAuth-authenticated Sheets API v4 fetch + parsing. |
-| `charts.js` | `window.Charts` | All ECharts option builders + rules-based summary + anomaly detection. |
-| `app.js` | (IIFE) | Auth, load, tab state, KPI rendering, orchestrates which cards show for which segment. |
+| `config.js` | `window.CONFIG` | 唯一需要手動維護的設定：試算表 ID、OAuth 用戶端 ID、Top-N、分頁清單、異常門檻。 |
+| `sheets.js` | `window.Sheets` | 帶 OAuth 權杖呼叫 Sheets API v4，並解析回傳資料。 |
+| `charts.js` | `window.Charts` | 所有 ECharts option 產生器、規則式重點摘要、異常偵測。 |
+| `app.js` | （IIFE） | 登入、載入、分頁切換、KPI 渲染，以及決定各分頁顯示哪些卡片。 |
 
-External runtime deps come from CDN in `index.html`: ECharts 5.5.0 and Google Identity Services.
+外部 runtime 依賴由 `index.html` 直接透過 CDN 載入：ECharts 5.5.0 與 Google Identity Services。
 
-### Sheet → data model (critical)
+### 試算表 → 資料模型（重要）
 
-`sheets.js` deliberately **never hard-codes row or column indices**. Inserting or reordering rows in the source spreadsheet must not break the dashboard. The parser (`parseSheet`) works in three stages:
+`sheets.js` 刻意**不寫死任何列號或欄號**，源試算表插入或搬動列都不能弄壞儀表板。`parseSheet` 分三步走：
 
-1. **Month row**: scan the first 20 rows, pick the one with the most date-parseable cells (`toYearMonth` handles Sheets serial numbers, ISO, M/D/YYYY, and Date objects). This yields `months: [{col, year, month, label}]`.
-2. **Metric rows** (`metricRow`): locate a row by regex against a label taken from column C/B/D/A (in that order — see `label()`). The rows currently required by downstream code are anchored to these exact regexes:
+1. **月份列**：掃描前 20 列，取「可解析為日期的儲存格最多」的那一列（`toYearMonth` 支援 Sheets 序列數字、ISO 字串、M/D/YYYY、Date 物件），得到 `months: [{col, year, month, label}]`。
+2. **關鍵指標列**（`metricRow`）：以正則比對「科目名稱」欄（依序看 C/B/D/A 欄，見 `label()`）。目前下游依賴以下正則作為錨點：
    - `/^total income$/i` → `revenue`
    - `/^total cost of sales$/i` → `cogs`
    - `/^gross profit$/i` → `gp`
    - `/^total operating expenses$/i` → `opex`
-   - `/ebi.?t?da/i` excluding `margin|%` → `ebitda` (tolerates the `EBIDA` typo)
-   - `/^\s*orders?\b/i` with `requireData` → `orders` (only present on B2B sheet)
-3. **Section item lists** (`sectionItems`): everything between a start-label row and an end-label row with non-zero totals. Used to get `incomeItems`, `cogsItems`, `opexItems`.
+   - `/ebi.?t?da/i` 並排除 `margin|%` → `ebitda`（容忍 `EBIDA` 這種拼錯）
+   - `/^\s*orders?\b/i` 且要求有資料 → `orders`（只有 B2B 分頁會有）
+3. **區段明細清單**（`sectionItems`）：擷取兩個標籤列「之間」且全年不為 0 的列，用來取得 `incomeItems`、`cogsItems`、`opexItems`。
 
-If you rename any of the anchor labels in the sheet, update the regexes here — they are the schema. The Sheets API is called with `valueRenderOption=UNFORMATTED_VALUE`, so dates come back as serial numbers; keep that in mind when adjusting `toYearMonth`.
+**如果源試算表的錨點標籤被改名，就必須同步更新這裡的正則**——它們就是這個系統的 schema。Sheets API 是以 `valueRenderOption=UNFORMATTED_VALUE` 呼叫的，日期會回傳成序列數字，調整 `toYearMonth` 時請留意。
 
-### Segments ↔ sheet tabs
+### 分頁 ↔ 試算表工作表
 
-`CONFIG.SEGMENTS` (`total`, `b2b`, `b2c`) is bound to the sheet's **tab order**, not tab names. `Sheets.fetchAll` sorts tabs by `properties.index`, takes the first three, and maps them by array position. If a new segment tab is added, extend `SEGMENTS` **and** loosen the `.slice(0, 3)` in `sheets.js`.
+`CONFIG.SEGMENTS`（`total`、`b2b`、`b2c`）綁定的是試算表的**工作表順序**，不是名稱。`Sheets.fetchAll` 會依 `properties.index` 排序，取前三個工作表，並依陣列位置對映。如果日後新增一個分頁，需要同時擴充 `SEGMENTS` **並且**放寬 `sheets.js` 內的 `.slice(0, 3)`。
 
-### Rendering flow
+### 渲染流程
 
-`app.js`'s `render()` decides which cards to show based on the current segment:
+`app.js` 的 `render()` 依照目前分頁決定哪些卡片顯示：
 
-- All segments: `chart-pnl`, `chart-rates`, `chart-expratio`, `chart-costmix`.
-- Non-total (`b2b`/`b2c`) only: `chart-revcost`, `chart-gpexp`.
-- B2B only (has orders): `chart-perorder`. Also `chart-waaship` iff any income item name matches `/waaship/i`.
-- Total only: `chart-contrib` (2B vs 2C comparison, reads all three segments' parsed data).
+- 所有分頁都顯示：`chart-pnl`、`chart-rates`、`chart-expratio`、`chart-costmix`。
+- 只有非合計（`b2b`/`b2c`）顯示：`chart-revcost`、`chart-gpexp`。
+- 只有 B2B（有訂單數）顯示：`chart-perorder`；另外只有當某個 income item 名稱符合 `/waaship/i` 時才顯示 `chart-waaship`。
+- 只有合計顯示：`chart-contrib`（2B vs 2C 比較，會同時讀三個分頁的解析結果）。
 
-Each card is a `<section class="hidden">` in `index.html`; `show(cardId, chartId, visible, optionFn)` toggles visibility and calls the corresponding `Charts.*Option` builder. Adding a chart requires: (1) a new `<section>` in `index.html`, (2) an option builder in `charts.js`, (3) a `show()` call in `render()`.
+每張圖對應 `index.html` 內一個 `<section class="hidden">` 卡片，由 `show(cardId, chartId, visible, optionFn)` 切換可見度並呼叫對應的 `Charts.*Option` builder。**新增一張圖表**需要三步：(1) 在 `index.html` 新增 `<section>`、(2) 在 `charts.js` 新增 option builder、(3) 在 `render()` 內新增 `show()` 呼叫。
 
-ECharts instances are cached in `app.js`'s `instances` object and reused across renders via `setOption(..., true)`. They also resize on window resize and on a 30ms deferred pass after each render.
+ECharts 實例快取於 `app.js` 的 `instances` 物件，透過 `setOption(..., true)` 重複使用；並且會在 window resize 時、以及每次 render 後延遲 30ms 統一 resize 一次。
 
-### Auth flow
+### 登入流程
 
-Uses **Google Identity Services** (`google.accounts.oauth2.initTokenClient`) directly, not `gapi.client`. The token is held in-memory only (`gtoken`) and passed via `Authorization: Bearer` header on each Sheets fetch. `Sheets.apiGet` treats 401 as expiry and throws `{code: 401}`, which `app.js` catches and re-prompts login. Scope is read-only: `spreadsheets.readonly`.
+直接使用 **Google Identity Services**（`google.accounts.oauth2.initTokenClient`），不使用 `gapi.client`。權杖只放在記憶體中的 `gtoken`，每次呼叫 Sheets API 時透過 `Authorization: Bearer` 帶入。`Sheets.apiGet` 遇到 401 視為權杖過期並丟出 `{code: 401}`，由 `app.js` 攔截後再次要求登入。scope 是唯讀：`spreadsheets.readonly`。
 
-### The Top-N / Others convention
+### Top-N / Others 慣例
 
-`Charts.topN(items, monthsLen, n)` sorts items by year-total, keeps the top N, and sums the rest into an "Others" bucket. Callers must **check for `name === "Others"`** to apply the neutral gray (`OTHERS`) instead of the categorical palette (`CAT`). This is the pattern used in `revCostOption`, `gpExpOption`, and `costMix100Option` — follow it in any new stacked chart.
+`Charts.topN(items, monthsLen, n)` 依年度加總排序取前 N 項，其餘全部併入名為「Others」的桶子。呼叫端需要**檢查 `name === "Others"`** 並套用中性灰色（`OTHERS`）而不是分類色盤（`CAT`）。這個模式在 `revCostOption`、`gpExpOption`、`costMix100Option` 都有——新增堆疊圖時請沿用。
 
-### Excluding depreciation from expense charts
+### 折舊/攤銷從費用圖表中排除
 
-`CONFIG.EXCLUDE_EXPENSE_PREFIX` (default: `["Depreciation", "Amortization"]`) drives the `excludedExpense(name)` filter used by `gpExpOption`, the `biggestMover` for expenses in `summary`, and the EBITDA bridge. This is intentional: EBITDA-oriented views should not surface D&A movements. When adding a new expense chart, decide explicitly whether to apply this filter.
+`CONFIG.EXCLUDE_EXPENSE_PREFIX`（預設 `["Depreciation", "Amortization"]`）驅動 `excludedExpense(name)` 過濾器，被 `gpExpOption`、`summary` 內的「費用最大變動」`biggestMover`，以及 EBITDA bridge 使用。這是刻意的：以 EBITDA 為視角的圖表不該把 D&A 的波動一起帶進來。新增費用相關圖表時，請明確決定是否要套用這個過濾器。
 
-### Anomaly detection
+### 異常偵測
 
-`Charts.anomalies(d)` scans revenue, gross profit, and every cost/expense item in the **current year** and flags months whose value deviates from the median of the previous `CONFIG.ANOMALY.baselineWindow` months by both a relative threshold (`relThreshold`) and an absolute floor (`absFloor`). It also flags sign flips (positive baseline → negative value) as `dir: "flip"` with a "possible reversal / reclassification" note. Results are sorted by materiality, top-N kept, then re-sorted newest-first for display.
+`Charts.anomalies(d)` 掃描收入、毛利，以及所有成本/費用明細，只針對**當年度**每個月，看是否偏離「前 `CONFIG.ANOMALY.baselineWindow` 個月的中位數」達到相對門檻（`relThreshold`）**且**絕對門檻（`absFloor`）。此外會把「基準為正、當月變負」偵測為符號翻轉，標成 `dir: "flip"` 並註記「疑似計提沖回/重分類」。結果先依金額變動排序取前 N 項，再重新依月份新→舊排序後回傳。
 
-## Editing conventions
+## 修改慣例
 
-- **UI copy is Traditional Chinese.** Match tone and terminology of existing strings when adding user-visible text (e.g. `重點摘要`, `本期需說明`, `資料檢核`).
-- **No modules, no `let`/`const` in hot paths.** The existing code uses `var` and IIFEs pinned to `window.*` globals; keep that pattern rather than introducing ES modules or bundling.
-- **Config-first.** Anything a business user might want to tune (thresholds, palette segments, excluded prefixes) belongs in `config.js`, not scattered in chart code.
-- **Don't hard-code row numbers or column letters.** Add a new regex to `metricRow` / `sectionItems` in `sheets.js` and let the parser locate it.
+- **UI 文案為繁體中文。** 新增對使用者呈現的字串時，語氣與用詞請對齊既有字串（例如 `重點摘要`、`本期需說明`、`資料檢核`）。
+- **不要引入模組系統或 build。** 現有程式碼是 `var` + IIFE + `window.*` 全域的風格，請維持此風格，不要引入 ES modules 或打包工具。
+- **設定優先（Config-first）。** 只要是業務端可能想要調整的參數（門檻、色盤區段、要排除的科目前綴），一律放到 `config.js`，不要散落在圖表程式碼內。
+- **不要寫死列號或欄號。** 需要新的欄位就在 `sheets.js` 的 `metricRow` / `sectionItems` 內新增一條正則，讓解析器去定位。
