@@ -66,7 +66,19 @@ ECharts 實例快取於 `app.js` 的 `instances` 物件，透過 `setOption(...,
 
 ### 登入流程
 
-直接使用 **Google Identity Services**（`google.accounts.oauth2.initTokenClient`），不使用 `gapi.client`。權杖只放在記憶體中的 `gtoken`，每次呼叫 Sheets API 時透過 `Authorization: Bearer` 帶入。`Sheets.apiGet` 遇到 401 視為權杖過期並丟出 `{code: 401}`，由 `app.js` 攔截後再次要求登入。scope 為 `openid email https://www.googleapis.com/auth/spreadsheets.readonly` — 後兩者分別用來拿使用者 email（做應用層白名單）與唯讀讀取試算表。
+直接使用 **Google Identity Services**（`google.accounts.oauth2.initTokenClient`），不使用 `gapi.client`。權杖只放在記憶體中的 `gtoken`，每次呼叫 Sheets API 時透過 `Authorization: Bearer` 帶入。`Sheets.apiGet` 遇到 401 視為權杖過期並丟出 `{code: 401}`，由 `app.js` 攔截後交給 `handleAuthError()` 決定續發或重新登入（見下）。scope 為 `openid email https://www.googleapis.com/auth/spreadsheets.readonly` — 後兩者分別用來拿使用者 email（做應用層白名單）與唯讀讀取試算表。
+
+### 7 天內免重新登入（靜默續發）
+
+Google 給的 access token 本身只活約 1 小時，所以「使用者 7 天內不用重新登入」的實作方式是靠 `localStorage` 記一個 7 天的 session 戳，配合 GIS 的靜默續發（`requestAccessToken({ prompt: "" })`）：
+
+- `SESSION_KEY = "boxful_authz_expires_at"`，`SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000`。**只存過期時間戳，不存 access token 本身**（避免 XSS 直接偷到 token）。
+- `initAuth()` 建立完 `tokenClient` 後，若 `sessionValid()` 為真就立刻呼叫 `requestAccessToken({ prompt: "" })` 靜默取得新 token；否則顯示登入畫面等使用者手動點按鈕。
+- 每次 token callback 成功都會 `markSession()` 把 7 天視窗往後推（滑動視窗式）。
+- `handleAuthError()` 是 401 的統一處理：若 session 仍有效就靜默續發、失敗才 fallback 到 `showLogin`。`load()` 與 `authorizeAndLoad()` 的兩個 `catch` 都走這條路徑，不會直接 `showLogin`。
+- `error_callback` 觸發時（Google 側撤銷、瀏覽器沒 Google session 等）會 `clearSession()`，因為靜默續發都失敗代表授權層已斷。
+- `showUnauthorized` 的「改用其他帳號登入」按鈕會 `clearSession()` 並用 `prompt: "consent"` 強制彈選帳號視窗。
+- `localStorage` 被瀏覽器禁用時（隱私模式的某些設定），`markSession` / `clearSession` 的 `try/catch` 會靜默吞掉例外 — 只是退化為單次登入，其他流程照跑。
 
 ### 應用層權限白名單（重要）
 
