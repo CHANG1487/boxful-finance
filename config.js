@@ -15,7 +15,7 @@ window.CONFIG = {
   // 圖三「費用明細」要排除的科目（以名稱開頭比對）。EBITDA 不看折舊攤銷，故排除。
   EXCLUDE_EXPENSE_PREFIX: ["Depreciation", "Amortization"],
 
-  // 三張表對應的鍵（依試算表分頁順序：第1張=合計、第2張=2B、第3張=2C）
+  // 三張表對應的鍵（依試算表分頁順序：合計/2B/2C；系統會自動跳過 AUTHZ_SHEET_TITLE 那張）
   SEGMENTS: [
     { key: "total", label: "合計", hasOrders: false },
     { key: "b2b",   label: "2B",   hasOrders: true  },
@@ -24,6 +24,10 @@ window.CONFIG = {
 
   // 預設開啟的分頁
   DEFAULT_SEGMENT: "total",
+
+  // 權限白名單：這張 sheet 內任何含 email 的儲存格，就是允許登入儀表板的清單。
+  // 只要試算表分享權限開放給整個網域，這裡就是唯一的權限控制點；不在名單的 email 會被擋掉。
+  AUTHZ_SHEET_TITLE: "權限管理",
 
   // 「本期需說明」異常偵測門檻
   ANOMALY: {

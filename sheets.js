@@ -153,11 +153,15 @@ window.Sheets = (function () {
   function fetchAll() {
     if (!TOKEN) return Promise.reject(new Error("尚未登入 Google 帳號。"));
     const id = CONFIG.SPREADSHEET_ID;
+    const authzTitle = CONFIG.AUTHZ_SHEET_TITLE || "";
     const metaUrl = "https://sheets.googleapis.com/v4/spreadsheets/" + id + "?fields=sheets.properties(title,index)";
     return apiGet(metaUrl).then(function (meta) {
-      const titles = (meta.sheets || []).sort(function (a, b) { return a.properties.index - b.properties.index; })
-        .map(function (s) { return s.properties.title; }).slice(0, 3);
-      if (titles.length < 3) throw new Error("這份試算表分頁不足 3 個。");
+      const titles = (meta.sheets || [])
+        .sort(function (a, b) { return a.properties.index - b.properties.index; })
+        .map(function (s) { return s.properties.title; })
+        .filter(function (t) { return t !== authzTitle; })   // 跳過權限白名單那張
+        .slice(0, 3);
+      if (titles.length < 3) throw new Error("這份試算表主資料分頁不足 3 個（合計 / 2B / 2C）。");
       const ranges = titles.map(function (t) {
         return "ranges=" + encodeURIComponent("'" + t.replace(/'/g, "''") + "'");
       }).join("&");
@@ -174,5 +178,55 @@ window.Sheets = (function () {
     });
   }
 
-  return { fetchAll: fetchAll, setToken: setToken, _parseSheet: parseSheet, _num: num };
+  /* ---------- 對外：權限白名單（讀「權限管理」sheet 的所有 email） ---------- */
+
+  const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+
+  function fetchAllowedEmails() {
+    if (!TOKEN) return Promise.reject(new Error("尚未登入 Google 帳號。"));
+    const title = CONFIG.AUTHZ_SHEET_TITLE;
+    if (!title) return Promise.resolve(null);   // 沒設定就代表不做應用層白名單
+    const url = "https://sheets.googleapis.com/v4/spreadsheets/" + CONFIG.SPREADSHEET_ID +
+      "/values/" + encodeURIComponent("'" + title.replace(/'/g, "''") + "'") +
+      "?valueRenderOption=UNFORMATTED_VALUE&majorDimension=ROWS";
+    return apiGet(url).then(function (res) {
+      const rows = (res && res.values) || [];
+      const emails = new Set();
+      rows.forEach(function (row) {
+        (row || []).forEach(function (cell) {
+          if (cell == null) return;
+          const match = String(cell).toLowerCase().match(EMAIL_RE);
+          if (match) emails.add(match[0]);
+        });
+      });
+      return emails;
+    }).catch(function (err) {
+      // 找不到分頁時 Google 回 400，這裡轉成清楚的訊息
+      if (err && !err.code) {
+        const wrapped = new Error("找不到權限白名單分頁「" + title + "」；請確認分頁名稱與 config.js 內 AUTHZ_SHEET_TITLE 一致。");
+        wrapped.code = "AUTHZ_SHEET_MISSING";
+        throw wrapped;
+      }
+      throw err;
+    });
+  }
+
+  /* ---------- 對外：目前登入者的 email ---------- */
+
+  function fetchUserEmail() {
+    if (!TOKEN) return Promise.reject(new Error("尚未登入 Google 帳號。"));
+    return fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { Authorization: "Bearer " + TOKEN },
+    }).then(function (res) {
+      if (res.status === 401) { const e = new Error("登入已過期，請重新登入。"); e.code = 401; throw e; }
+      if (!res.ok) return res.text().then(function (t) { throw new Error("無法取得使用者資訊（" + res.status + "）：" + t.slice(0, 200)); });
+      return res.json();
+    }).then(function (info) { return (info && info.email ? String(info.email).toLowerCase() : ""); });
+  }
+
+  return {
+    fetchAll: fetchAll, setToken: setToken,
+    fetchAllowedEmails: fetchAllowedEmails, fetchUserEmail: fetchUserEmail,
+    _parseSheet: parseSheet, _num: num,
+  };
 })();

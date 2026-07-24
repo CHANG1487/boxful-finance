@@ -17,9 +17,10 @@
     try {
       tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CONFIG.OAUTH_CLIENT_ID,
-        scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
+        // 除了讀 Sheets 之外，還需要 openid email 才能拿到當前登入者的 email 做白名單比對
+        scope: "openid email https://www.googleapis.com/auth/spreadsheets.readonly",
         callback: function (resp) {
-          if (resp && resp.access_token) { gtoken = resp.access_token; Sheets.setToken(gtoken); load(); }
+          if (resp && resp.access_token) { gtoken = resp.access_token; Sheets.setToken(gtoken); authorizeAndLoad(); }
           else { showLogin("登入未完成，請再試一次。"); }
         },
         error_callback: function () { showLogin("登入被中斷或未授權，請再試一次。"); },
@@ -43,7 +44,30 @@
     if (b) b.onclick = signIn;
   }
 
-  /* ---------- 載入 ---------- */
+  /* ---------- 授權檢查 + 載入 ---------- */
+  // 登入取得 token 後：先拿使用者 email → 讀「權限管理」sheet 白名單 → 比對；通過才進入 load()
+  function authorizeAndLoad() {
+    if (!gtoken) { showLogin(); return; }
+    setLoading(true);
+    showState(null);
+    Promise.all([Sheets.fetchUserEmail(), Sheets.fetchAllowedEmails()])
+      .then(function (arr) {
+        const email = arr[0];
+        const allowed = arr[1];
+        if (allowed && !allowed.has(email)) {
+          setLoading(false);
+          showUnauthorized(email);
+          return;
+        }
+        load();
+      })
+      .catch(function (err) {
+        setLoading(false);
+        if (err && err.code === 401) { gtoken = null; showLogin("登入已過期，請重新登入。"); }
+        else { showError(err); }
+      });
+  }
+
   function load() {
     if (!gtoken) { showLogin(); return; }
     setLoading(true);
@@ -259,13 +283,29 @@
     if (b) b.onclick = signIn;
   }
 
+  // 通過 Google 登入、但 email 不在「權限管理」sheet 白名單上時的畫面
+  function showUnauthorized(email) {
+    const node = document.createElement("div");
+    node.className = "state";
+    node.innerHTML =
+      "<h2>此帳號未獲授權</h2>" +
+      "<p>目前登入帳號：<b>" + (email || "(未知)") + "</b></p>" +
+      "<p>此帳號未列於試算表的「" + (CONFIG.AUTHZ_SHEET_TITLE || "權限管理") + "」白名單，無法檢視儀表板。" +
+      "若你認為這是誤判，請聯繫試算表擁有者將此 email 加入白名單。</p>" +
+      '<p style="margin-top:12px"><button class="ai-btn" id="switch-btn">改用其他帳號登入</button></p>';
+    showState(node);
+    const b = document.getElementById("switch-btn");
+    if (b) b.onclick = function () { gtoken = null; signIn(); };
+  }
+
   /* ---------- 啟動 ---------- */
   window.addEventListener("resize", function () {
     Object.keys(instances).forEach(function (k) { instances[k].resize(); });
   });
   document.addEventListener("DOMContentLoaded", function () {
     buildTabs();
-    $("#refresh").onclick = load;
+    // 重新整理走完整流程（也會重新驗白名單），這樣白名單被更新後按 refresh 就會立刻套用
+    $("#refresh").onclick = authorizeAndLoad;
     initAuth();
   });
 })();

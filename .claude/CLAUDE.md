@@ -66,7 +66,17 @@ ECharts 實例快取於 `app.js` 的 `instances` 物件，透過 `setOption(...,
 
 ### 登入流程
 
-直接使用 **Google Identity Services**（`google.accounts.oauth2.initTokenClient`），不使用 `gapi.client`。權杖只放在記憶體中的 `gtoken`，每次呼叫 Sheets API 時透過 `Authorization: Bearer` 帶入。`Sheets.apiGet` 遇到 401 視為權杖過期並丟出 `{code: 401}`，由 `app.js` 攔截後再次要求登入。scope 是唯讀：`spreadsheets.readonly`。
+直接使用 **Google Identity Services**（`google.accounts.oauth2.initTokenClient`），不使用 `gapi.client`。權杖只放在記憶體中的 `gtoken`，每次呼叫 Sheets API 時透過 `Authorization: Bearer` 帶入。`Sheets.apiGet` 遇到 401 視為權杖過期並丟出 `{code: 401}`，由 `app.js` 攔截後再次要求登入。scope 為 `openid email https://www.googleapis.com/auth/spreadsheets.readonly` — 後兩者分別用來拿使用者 email（做應用層白名單）與唯讀讀取試算表。
+
+### 應用層權限白名單（重要）
+
+除了 Google Sheet 本身的分享權限之外，儀表板還有第二層 email 白名單，用於「試算表分享權限開得比較寬（例如整個公司網域可讀），但只有名單上的人可以看到儀表板」的情境。
+
+- 白名單來源：試算表內一張分頁，分頁名由 `CONFIG.AUTHZ_SHEET_TITLE`（預設 `"權限管理"`）指定。`Sheets.fetchAllowedEmails()` 讀進這張 sheet 的所有儲存格，用 email 正則（`/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/`）抽出所有 email 組成 `Set` — 也就是說 email 放在哪一欄、要不要 header 都沒關係。
+- 比對時機：`app.js` 的 `authorizeAndLoad()` 在拿到 OAuth token 之後、`load()` 之前執行。以 `Promise.all([fetchUserEmail(), fetchAllowedEmails()])` 平行取得使用者 email 與白名單，`email` 不在 `Set` 內就走 `showUnauthorized(email)` 分支、不進主資料抓取。
+- 若 `AUTHZ_SHEET_TITLE` 是空字串或該分頁不存在：前者代表停用白名單（`fetchAllowedEmails` 回 `null`，一律放行）；後者 API 會回 400，`fetchAllowedEmails` 轉成 `{code: "AUTHZ_SHEET_MISSING"}` 的錯誤讓 `showError` 呈現。
+- `fetchAll` 的三張主表（`total`/`b2b`/`b2c`）取用時會自動把名為 `AUTHZ_SHEET_TITLE` 的分頁**過濾掉**，所以「權限管理」sheet 放在試算表的第幾個位置都不影響主資料的抓取順序。
+- Refresh 按鈕綁的是 `authorizeAndLoad` 而不是 `load`，讓 owner 修改白名單後使用者按重新整理可以立刻套用最新名單。
 
 ### Top-N / Others 慣例
 
