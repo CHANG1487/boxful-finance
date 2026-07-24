@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BOXFUL 損益儀表板</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <div class="brand">
+        <h1>BOXFUL 損益儀表板</h1>
+        <div class="sub">資料來源：<b>2026 BUH FA</b> · 即時讀取 Google Sheet</div>
+      </div>
+      <div class="tabs" id="tabs" role="tablist"></div>
+      <button class="refresh" id="refresh">
+        <span class="spin">🔄</span> 重新整理
+      </button>
+    </div>
+  </header>
+
+  <!-- 錯誤 / 載入狀態 -->
+  <div id="state" class="hidden"></div>
+
+  <!-- 主儀表板 -->
+  <main id="dash" class="wrap">
+    <p class="updated" id="updated">載入中…</p>
+
+    <section class="kpis" id="kpis"></section>
+
+    <section class="card summary hidden" id="summary"></section>
+
+    <section class="card exceptions hidden" id="exceptions"></section>
+
+    <div class="divider">概況</div>
+    <section class="card">
+      <div class="chart" id="chart-pnl"></div>
+      <details class="check">
+        <summary>資料檢核（確認每個指標抓對了哪一列）</summary>
+        <div class="body" id="check-body"></div>
+      </details>
+    </section>
+
+    <section class="card hidden" id="card-revcost">
+      <div class="chart" id="chart-revcost"></div>
+    </section>
+
+    <section class="card hidden" id="card-gpexp">
+      <div class="chart" id="chart-gpexp"></div>
+    </section>
+
+    <div class="divider">結構與效率分析</div>
+    <section class="card hidden" id="card-rates"><div class="chart" id="chart-rates"></div></section>
+    <section class="card hidden" id="card-perorder"><div class="chart" id="chart-perorder"></div></section>
+    <section class="card hidden" id="card-waaship"><div class="chart" id="chart-waaship"></div></section>
+    <section class="card hidden" id="card-expratio"><div class="chart" id="chart-expratio"></div></section>
+    <section class="card hidden" id="card-costmix"><div class="chart" id="chart-costmix"></div></section>
+    <section class="card hidden" id="card-contrib"><div class="chart" id="chart-contrib"></div></section>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="sheets.js"></script>
+  <script src="charts.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
