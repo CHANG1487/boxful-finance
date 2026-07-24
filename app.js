@@ -2,14 +2,15 @@
  *  主程式：抓資料 → KPI → 圖表；分頁切換、重新整理、資料檢核、錯誤處理
  * ------------------------------------------------------------------ */
 (function () {
-  var DATA = null;                 // 解析後的三分頁資料
-  var current = CONFIG.DEFAULT_SEGMENT;
-  var instances = {};              // ECharts 實例
+  let DATA = null;                   // 解析後的三分頁資料
+  let current = CONFIG.DEFAULT_SEGMENT;
+  const instances = {};              // ECharts 實例
 
-  var $ = function (s) { return document.querySelector(s); };
+  const $ = function (s) { return document.querySelector(s); };
 
   /* ---------- Google 登入（OAuth） ---------- */
-  var tokenClient = null, gtoken = null;
+  let tokenClient = null;
+  let gtoken = null;
 
   function initAuth() {
     if (!(window.google && google.accounts && google.accounts.oauth2)) { setTimeout(initAuth, 300); return; }
@@ -31,14 +32,14 @@
     tokenClient.requestAccessToken({ prompt: gtoken ? "" : "consent" });
   }
   function showLogin(msg) {
-    var node = document.createElement("div");
+    const node = document.createElement("div");
     node.className = "state";
     node.innerHTML =
       "<h2>請以公司 Google 帳號登入</h2>" +
       "<p>本儀表板僅供已授權的 BOXFUL 帳號檢視。" + (msg ? "<br/><b style='color:var(--danger)'>" + msg + "</b>" : "") + "</p>" +
       '<p style="margin-top:14px"><button class="ai-btn" id="signin-btn" style="font-size:14px;padding:9px 18px">使用 Google 登入</button></p>';
     showState(node);
-    var b = document.getElementById("signin-btn");
+    const b = document.getElementById("signin-btn");
     if (b) b.onclick = signIn;
   }
 
@@ -61,7 +62,7 @@
   }
 
   function setLoading(on) {
-    var b = $("#refresh");
+    const b = $("#refresh");
     b.disabled = on;
     b.classList.toggle("loading", on);
   }
@@ -71,10 +72,10 @@
 
   /* ---------- 分頁 ---------- */
   function buildTabs() {
-    var box = $("#tabs");
+    const box = $("#tabs");
     box.innerHTML = "";
     CONFIG.SEGMENTS.forEach(function (seg) {
-      var btn = document.createElement("button");
+      const btn = document.createElement("button");
       btn.textContent = seg.label;
       btn.setAttribute("aria-selected", seg.key === current);
       btn.onclick = function () {
@@ -89,8 +90,8 @@
 
   /* ---------- 重點摘要（規則式，固定格式） ---------- */
   function renderSummary(d, seg) {
-    var bullets = Charts.summary(d, seg);
-    var box = $("#summary");
+    const bullets = Charts.summary(d, seg);
+    const box = $("#summary");
     if (!bullets.length) { box.classList.add("hidden"); return; }
     box.classList.remove("hidden");
     box.innerHTML =
@@ -101,13 +102,13 @@
 
   /* ---------- 本期需說明（異常清單） ---------- */
   function renderExceptions(d, seg) {
-    var flags = Charts.anomalies(d);
-    var box = $("#exceptions");
+    const flags = Charts.anomalies(d);
+    const box = $("#exceptions");
     if (!flags.length) { box.classList.add("hidden"); return; }
     box.classList.remove("hidden");
-    var icon = { up: "▲", down: "▼", flip: "⚠" };
-    var cls = { up: "exc-up", down: "exc-down", flip: "exc-flip" };
-    var rows = flags.map(function (f) {
+    const icon = { up: "▲", down: "▼", flip: "⚠" };
+    const cls = { up: "exc-up", down: "exc-down", flip: "exc-flip" };
+    const rows = flags.map(function (f) {
       return "<tr>" +
         "<td class='num'>" + f.month + "</td>" +
         "<td>" + f.name + "</td>" +
@@ -122,30 +123,34 @@
       Math.round((CONFIG.ANOMALY.relThreshold || 0.4) * 100) + "% 以上，依金額排序</span></div>" +
       '<div class="exc-wrap"><table class="exc">' +
       "<thead><tr><th>月份</th><th>科目</th><th>當月值</th><th>近期基準</th><th>偏離</th><th>判讀</th></tr></thead>" +
-      "<tbody>" + rows + "</tbody></table></div>";
+      "<tbody>" + rows + "</tbody></table>";
   }
 
   /* ---------- KPI ---------- */
   function last(v) { return (v && v.values && v.values.length) ? v.values[v.values.length - 1] : null; }
   function renderKpis(d, seg) {
-    var rev = last(d.revenue), gp = last(d.gp), cogs = last(d.cogs);
-    var gpm = (rev ? gp / rev * 100 : null);
+    const rev = last(d.revenue);
+    const gp = last(d.gp);
+    const cogs = last(d.cogs);
+    const gpm = (rev ? gp / rev * 100 : null);
     // 最新月的累計 EBITDA%
-    var months = d.months, curYear = Math.max.apply(null, months.map(function (m) { return m.year; }));
-    var curMonths = months.filter(function (m) { return m.year === curYear; });
-    var lastM = curMonths.length ? Math.max.apply(null, curMonths.map(function (m) { return m.month; })) : null;
-    var ebpct = null;
+    const months = d.months;
+    const curYear = Math.max.apply(null, months.map(function (m) { return m.year; }));
+    const curMonths = months.filter(function (m) { return m.year === curYear; });
+    const lastM = curMonths.length ? Math.max.apply(null, curMonths.map(function (m) { return m.month; })) : null;
+    let ebpct = null;
     if (d.ebitda && d.revenue && lastM) {
-      var ce = 0, cr = 0;
+      let ce = 0;
+      let cr = 0;
       months.forEach(function (m, i) {
         if (m.year === curYear && m.month <= lastM) { ce += d.ebitda.values[i]; cr += d.revenue.values[i]; }
       });
       ebpct = cr ? ce / cr * 100 : null;
     }
-    var ord = seg.hasOrders ? last(d.orders) : null;
-    var lastLabel = d.months.length ? d.months[d.months.length - 1].label : "";
+    const ord = seg.hasOrders ? last(d.orders) : null;
+    const lastLabel = d.months.length ? d.months[d.months.length - 1].label : "";
 
-    var cards = [
+    const cards = [
       { label: "最新月收入", val: Charts.money(rev), sub: lastLabel },
       { label: "毛利率", val: Charts.pct(gpm), sub: "本月毛利 " + Charts.money(gp) },
       { label: "累計 EBITDA%", val: Charts.pct(ebpct), sub: curYear + " 年初至今" },
@@ -162,7 +167,7 @@
 
   /* ---------- 圖表 ---------- */
   function draw(id, option) {
-    var el = document.getElementById(id);
+    const el = document.getElementById(id);
     if (!instances[id]) instances[id] = echarts.init(el, null, { renderer: "canvas" });
     instances[id].setOption(option, true);
   }
@@ -172,11 +177,11 @@
   }
   function render() {
     if (!DATA) return;
-    var seg = CONFIG.SEGMENTS.filter(function (s) { return s.key === current; })[0];
-    var d = DATA[current];
-    var detail = current !== "total";
-    var isTotal = current === "total";
-    var hasOrders = seg.hasOrders && d.orders;
+    const seg = CONFIG.SEGMENTS.filter(function (s) { return s.key === current; })[0];
+    const d = DATA[current];
+    const detail = current !== "total";
+    const isTotal = current === "total";
+    const hasOrders = seg.hasOrders && d.orders;
 
     renderKpis(d, seg);
     renderSummary(d, seg);
@@ -190,7 +195,7 @@
     // 結構與效率分析
     show("card-rates", "chart-rates", true, function () { return Charts.ratesOption(d, seg.label); });
     show("card-perorder", "chart-perorder", !!hasOrders, function () { return Charts.perOrderOption(d, seg.label); });
-    var hasWaaship = d.incomeItems.some(function (it) { return /waaship/i.test(it.name); });
+    const hasWaaship = d.incomeItems.some(function (it) { return /waaship/i.test(it.name); });
     show("card-waaship", "chart-waaship", hasWaaship, function () { return Charts.waashipOption(d, seg.label); });
     show("card-expratio", "chart-expratio", true, function () { return Charts.expenseRatioOption(d, seg.label); });
     show("card-costmix", "chart-costmix", true, function () { return Charts.costMix100Option(d, seg.label); });
@@ -203,15 +208,16 @@
   /* ---------- 資料檢核面板 ---------- */
   function renderCheck(d, seg) {
     function row(label, metric, isOrders) {
-      var found = !!metric, name = found ? metric.name : "—";
-      var lastVal = found ? Charts.money(metric.values[metric.values.length - 1]) : "—";
-      var ok = found && !(isOrders && metric.values.every(function (x) { return x === 0; }));
-      var status = ok ? '<span class="ok">✓ 已定位</span>'
+      const found = !!metric;
+      const name = found ? metric.name : "—";
+      const lastVal = found ? Charts.money(metric.values[metric.values.length - 1]) : "—";
+      const ok = found && !(isOrders && metric.values.every(function (x) { return x === 0; }));
+      const status = ok ? '<span class="ok">✓ 已定位</span>'
         : (isOrders ? '<span class="warn">未找到（本分頁不畫）</span>'
                     : '<span class="warn">✗ 未找到</span>');
       return "<tr><td>" + label + "</td><td>" + name + '</td><td class="num">' + lastVal + "</td><td>" + status + "</td></tr>";
     }
-    var rows = [
+    const rows = [
       row("收入 (Total Income)", d.revenue),
       row("成本 (Total Cost of Sales)", d.cogs),
       row("毛利 (Gross Profit)", d.gp),
@@ -220,7 +226,7 @@
     ];
     if (seg.hasOrders) rows.push(row("訂單數 (orders)", d.orders, true));
 
-    var monthSpan = d.months.length ? (d.months[0].label + " – " + d.months[d.months.length - 1].label) : "—";
+    const monthSpan = d.months.length ? (d.months[0].label + " – " + d.months[d.months.length - 1].label) : "—";
     $("#check-body").innerHTML =
       '<p style="color:var(--muted);margin:2px 0 12px">月份範圍：<b class="num">' + monthSpan +
       "</b>（共 " + d.months.length + " 個月）　成本明細 " + d.cogsItems.length +
@@ -231,13 +237,13 @@
 
   /* ---------- 狀態 / 錯誤 ---------- */
   function showState(node) {
-    var s = $("#state");
+    const s = $("#state");
     if (!node) { s.classList.add("hidden"); $("#dash").classList.remove("hidden"); return; }
     s.innerHTML = ""; s.appendChild(node); s.classList.remove("hidden"); $("#dash").classList.add("hidden");
   }
   function showError(err) {
-    var msg = (err && err.message) ? err.message : String(err);
-    var node = document.createElement("div");
+    const msg = (err && err.message) ? err.message : String(err);
+    const node = document.createElement("div");
     node.className = "state";
     node.innerHTML =
       "<h2>抓不到資料</h2><p>" + msg + "</p>" +
@@ -249,7 +255,7 @@
       "</ul>" +
       '<p style="margin-top:12px"><button class="ai-btn" id="relogin-btn">重新登入</button></p>';
     showState(node);
-    var b = document.getElementById("relogin-btn");
+    const b = document.getElementById("relogin-btn");
     if (b) b.onclick = signIn;
   }
 
