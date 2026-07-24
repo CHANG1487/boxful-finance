@@ -8,8 +8,43 @@
 
   var $ = function (s) { return document.querySelector(s); };
 
+  /* ---------- Google 登入（OAuth） ---------- */
+  var tokenClient = null, gtoken = null;
+
+  function initAuth() {
+    if (!(window.google && google.accounts && google.accounts.oauth2)) { setTimeout(initAuth, 300); return; }
+    try {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CONFIG.OAUTH_CLIENT_ID,
+        scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
+        callback: function (resp) {
+          if (resp && resp.access_token) { gtoken = resp.access_token; Sheets.setToken(gtoken); load(); }
+          else { showLogin("登入未完成，請再試一次。"); }
+        },
+        error_callback: function () { showLogin("登入被中斷或未授權，請再試一次。"); },
+      });
+    } catch (e) { showLogin("Google 登入初始化失敗：" + (e.message || e)); return; }
+    showLogin();
+  }
+  function signIn() {
+    if (!tokenClient) { showLogin("Google 登入尚未就緒，請稍候再按一次。"); return; }
+    tokenClient.requestAccessToken({ prompt: gtoken ? "" : "consent" });
+  }
+  function showLogin(msg) {
+    var node = document.createElement("div");
+    node.className = "state";
+    node.innerHTML =
+      "<h2>請以公司 Google 帳號登入</h2>" +
+      "<p>本儀表板僅供已授權的 BOXFUL 帳號檢視。" + (msg ? "<br/><b style='color:var(--danger)'>" + msg + "</b>" : "") + "</p>" +
+      '<p style="margin-top:14px"><button class="ai-btn" id="signin-btn" style="font-size:14px;padding:9px 18px">使用 Google 登入</button></p>';
+    showState(node);
+    var b = document.getElementById("signin-btn");
+    if (b) b.onclick = signIn;
+  }
+
   /* ---------- 載入 ---------- */
   function load() {
+    if (!gtoken) { showLogin(); return; }
     setLoading(true);
     showState(null);
     Sheets.fetchAll()
@@ -19,7 +54,8 @@
         render();
       })
       .catch(function (err) {
-        showError(err);
+        if (err && err.code === 401) { gtoken = null; showLogin("登入已過期，請重新登入。"); }
+        else { showError(err); }
       })
       .then(function () { setLoading(false); });
   }
@@ -206,13 +242,15 @@
     node.innerHTML =
       "<h2>抓不到資料</h2><p>" + msg + "</p>" +
       "<p>請依序檢查：</p><ul>" +
-      "<li>目前這個瀏覽器<b>已登入公司 Google 帳號</b>（有權開啟該 Sheet 的帳號）。</li>" +
-      "<li>Apps Script 已改成支援 JSONP 的版本，並<b>重新部署「新版本」</b>（部署 → 管理部署作業 → 鉛筆編輯 → 版本選新版本）。</li>" +
-      "<li>把上面錯誤旁的網址直接貼到新分頁測試：看得到 JSON 就代表端點正常。</li>" +
-      "<li><code>config.js</code> 的網址與 Token，和 Apps Script 內一致。</li>" +
-      "<li>是用小型伺服器開啟（<code>python -m http.server</code> → <code>http://localhost:8000</code>），而非雙擊檔案。</li>" +
-      "</ul>";
+      "<li>登入的 Google 帳號<b>有這份試算表的檢視權限</b>（向擁有者索取檢視權）。</li>" +
+      "<li>GCP 專案已<b>啟用 Google Sheets API</b>。</li>" +
+      "<li><code>config.js</code> 的 <code>OAUTH_CLIENT_ID</code> 與 <code>SPREADSHEET_ID</code> 正確。</li>" +
+      "<li>OAuth 用戶端的「已授權 JavaScript 來源」有包含目前這個網址來源（例如 <code>https://你的帳號.github.io</code> 或 <code>http://localhost:8000</code>）。</li>" +
+      "</ul>" +
+      '<p style="margin-top:12px"><button class="ai-btn" id="relogin-btn">重新登入</button></p>';
     showState(node);
+    var b = document.getElementById("relogin-btn");
+    if (b) b.onclick = signIn;
   }
 
   /* ---------- 啟動 ---------- */
@@ -222,6 +260,6 @@
   document.addEventListener("DOMContentLoaded", function () {
     buildTabs();
     $("#refresh").onclick = load;
-    load();
+    initAuth();
   });
 })();
