@@ -12,16 +12,45 @@
   let tokenClient = null;
   let gtoken = null;
 
-  // 7 天內免重新登入：只在 localStorage 存過期戳（不存 access token 本身，因為它只活約 1 小時且存下有 XSS 風險）。
-  // 頁面載入或 access token 過期時，若戳未過期就走 GIS 的靜默續發（prompt: ""）拿新 token — 使用者感受上就是免登入。
+  // 登入持久化：兩層機制
+  //   1) TOKEN_KEY：把 access token 連同過期時間存進 localStorage。只要 token 未過期
+  //      （約 1 小時），重整頁面完全不用打 Google，直接沿用 → 這是「重整不掉線」的主機制。
+  //   2) SESSION_KEY：7 天視窗戳。當 token 過期時嘗試 GIS 靜默續發；靜默續發失敗才回到
+  //      登入畫面。靜默續發常因瀏覽器封鎖第三方 Cookie 或缺乏使用者手勢而失敗，因此
+  //      不能作為唯一機制，只作為 token 過期後的加碼嘗試。
+  // 安全考量：本站為純靜態頁、無使用者輸入、無第三方腳本，XSS 風險極低；scope 僅為
+  // 唯讀 Sheets + 使用者 email，存 token 的實務風險可接受。
+  const TOKEN_KEY = "boxful_gtoken";
   const SESSION_KEY = "boxful_authz_expires_at";
   const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  const TOKEN_SKEW_MS = 30 * 1000;
+
+  function readCachedToken() {
+    try {
+      const raw = localStorage.getItem(TOKEN_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (!obj || !obj.token || !obj.expiresAt) return null;
+      // 留 30 秒緩衝，避免拿到「馬上就要過期」的 token 去打 API
+      if (Date.now() + TOKEN_SKEW_MS >= obj.expiresAt) { localStorage.removeItem(TOKEN_KEY); return null; }
+      return obj.token;
+    } catch (e) { return null; }
+  }
+  function writeCachedToken(token, expiresInSec) {
+    try {
+      const expiresAt = Date.now() + (Number(expiresInSec) || 3600) * 1000;
+      localStorage.setItem(TOKEN_KEY, JSON.stringify({ token: token, expiresAt: expiresAt }));
+    } catch (e) { /* localStorage 被禁用時忽略，僅退化為單次登入 */ }
+  }
+  function clearCachedToken() {
+    try { localStorage.removeItem(TOKEN_KEY); } catch (e) { /* 同上 */ }
+  }
   function sessionValid() {
     const v = parseInt(localStorage.getItem(SESSION_KEY) || "0", 10);
     return v > Date.now();
   }
   function markSession() {
-    try { localStorage.setItem(SESSION_KEY, String(Date.now() + SESSION_TTL_MS)); } catch (e) { /* localStorage 被禁用時忽略，僅退化為單次登入 */ }
+    try { localStorage.setItem(SESSION_KEY, String(Date.now() + SESSION_TTL_MS)); } catch (e) { /* 同上 */ }
   }
   function clearSession() {
     try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* 同上 */ }
@@ -38,31 +67,43 @@
           if (resp && resp.access_token) {
             gtoken = resp.access_token;
             Sheets.setToken(gtoken);
-            markSession();          // 每次成功發 token 就把 7 天視窗往後推
+            writeCachedToken(gtoken, resp.expires_in);   // 主機制：把 token 快取起來，下次重整直接用
+            markSession();                                // 加碼：把 7 天視窗往後推，供 token 過期後靜默續發
             authorizeAndLoad();
           } else {
             showLogin("登入未完成，請再試一次。");
           }
         },
         error_callback: function () {
-          // 靜默續發失敗（例如 Google 側撤銷授權、跨裝置登出）也會走這裡，此時 session 應視為失效
-          clearSession();
+          // 靜默續發失敗（第三方 Cookie 被封鎖、缺使用者手勢、Google 側撤銷授權…）會走這裡。
+          // 只清 token 快取；session 視窗保留給下次使用者手動登入時直接覆寫，避免掉入
+          // 「一次靜默失敗就把 7 天視窗砍掉、之後每次重整都要重登」的迴圈
+          clearCachedToken();
           showLogin("登入被中斷或未授權，請再試一次。");
         },
       });
     } catch (e) { showLogin("Google 登入初始化失敗：" + (e.message || e)); return; }
-    // 有 7 天內未過期的 session 就先靜默續發 access token；沒有才顯示登入畫面
-    if (sessionValid()) tokenClient.requestAccessToken({ prompt: "" });
-    else showLogin();
+    // 優先順序：有效 token 快取 → 直接用；否則 7 天視窗還在 → 試靜默續發；再否則 → 手動登入
+    const cached = readCachedToken();
+    if (cached) {
+      gtoken = cached;
+      Sheets.setToken(gtoken);
+      authorizeAndLoad();
+    } else if (sessionValid()) {
+      tokenClient.requestAccessToken({ prompt: "" });
+    } else {
+      showLogin();
+    }
   }
   function signIn() {
     if (!tokenClient) { showLogin("Google 登入尚未就緒，請稍候再按一次。"); return; }
     tokenClient.requestAccessToken({ prompt: gtoken ? "" : "consent" });
   }
 
-  // 401：access token 過期。7 天視窗還有效就靜默續發，否則要求重新登入。
+  // 401：access token 過期。先丟掉快取 token，再看 7 天視窗是否還在：還在就試靜默續發，否則要求重登
   function handleAuthError() {
     gtoken = null;
+    clearCachedToken();
     if (sessionValid() && tokenClient) tokenClient.requestAccessToken({ prompt: "" });
     else { clearSession(); showLogin("登入已過期，請重新登入。"); }
   }
@@ -330,7 +371,8 @@
     showState(node);
     const b = document.getElementById("switch-btn");
     if (b) b.onclick = function () {
-      // 主動切換帳號：清掉 7 天視窗，強制彈 consent 讓使用者挑另一個帳號
+      // 主動切換帳號：清掉快取 token 與 7 天視窗，強制彈 consent 讓使用者挑另一個帳號
+      clearCachedToken();
       clearSession();
       gtoken = null;
       if (tokenClient) tokenClient.requestAccessToken({ prompt: "consent" });
