@@ -12,6 +12,30 @@
   let tokenClient = null;
   let gtoken = null;
 
+  // 把 access token 暫存到 sessionStorage，重整頁面時可直接沿用同一顆權杖，
+  // 不必再走一次 Google 同意畫面；關閉分頁後自動消失，過期則不使用
+  const TOKEN_STORAGE_KEY = "bfx.gtoken";
+  function loadStoredToken() {
+    try {
+      const raw = sessionStorage.getItem(TOKEN_STORAGE_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (!obj || !obj.token || !obj.expiresAt) return null;
+      // 留 30 秒緩衝，避免拿到「馬上就要過期」的權杖去打 API
+      if (Date.now() + 30000 >= obj.expiresAt) { sessionStorage.removeItem(TOKEN_STORAGE_KEY); return null; }
+      return obj.token;
+    } catch (e) { return null; }
+  }
+  function storeToken(token, expiresInSec) {
+    try {
+      const expiresAt = Date.now() + (Number(expiresInSec) || 3600) * 1000;
+      sessionStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify({ token: token, expiresAt: expiresAt }));
+    } catch (e) { /* 儲存失敗就算了，最多退回原本每次重整都要登入 */ }
+  }
+  function clearStoredToken() {
+    try { sessionStorage.removeItem(TOKEN_STORAGE_KEY); } catch (e) { /* ignore */ }
+  }
+
   function initAuth() {
     if (!(window.google && google.accounts && google.accounts.oauth2)) { setTimeout(initAuth, 300); return; }
     try {
@@ -20,13 +44,28 @@
         // 除了讀 Sheets 之外，還需要 openid email 才能拿到當前登入者的 email 做白名單比對
         scope: "openid email https://www.googleapis.com/auth/spreadsheets.readonly",
         callback: function (resp) {
-          if (resp && resp.access_token) { gtoken = resp.access_token; Sheets.setToken(gtoken); authorizeAndLoad(); }
+          if (resp && resp.access_token) {
+            gtoken = resp.access_token;
+            storeToken(gtoken, resp.expires_in);
+            Sheets.setToken(gtoken);
+            authorizeAndLoad();
+          }
           else { showLogin("登入未完成，請再試一次。"); }
         },
         error_callback: function () { showLogin("登入被中斷或未授權，請再試一次。"); },
       });
     } catch (e) { showLogin("Google 登入初始化失敗：" + (e.message || e)); return; }
-    showLogin();
+
+    // 重整頁面時：如果 sessionStorage 內有尚未過期的權杖，直接沿用；
+    // 沒有的話才顯示登入畫面
+    const cached = loadStoredToken();
+    if (cached) {
+      gtoken = cached;
+      Sheets.setToken(gtoken);
+      authorizeAndLoad();
+    } else {
+      showLogin();
+    }
   }
   function signIn() {
     if (!tokenClient) { showLogin("Google 登入尚未就緒，請稍候再按一次。"); return; }
@@ -63,7 +102,7 @@
       })
       .catch(function (err) {
         setLoading(false);
-        if (err && err.code === 401) { gtoken = null; showLogin("登入已過期，請重新登入。"); }
+        if (err && err.code === 401) { gtoken = null; clearStoredToken(); showLogin("登入已過期，請重新登入。"); }
         else { showError(err); }
       });
   }
@@ -79,7 +118,7 @@
         render();
       })
       .catch(function (err) {
-        if (err && err.code === 401) { gtoken = null; showLogin("登入已過期，請重新登入。"); }
+        if (err && err.code === 401) { gtoken = null; clearStoredToken(); showLogin("登入已過期，請重新登入。"); }
         else { showError(err); }
       })
       .then(function () { setLoading(false); });
@@ -295,7 +334,7 @@
       '<p style="margin-top:12px"><button class="ai-btn" id="switch-btn">改用其他帳號登入</button></p>';
     showState(node);
     const b = document.getElementById("switch-btn");
-    if (b) b.onclick = function () { gtoken = null; signIn(); };
+    if (b) b.onclick = function () { gtoken = null; clearStoredToken(); signIn(); };
   }
 
   /* ---------- 啟動 ---------- */
