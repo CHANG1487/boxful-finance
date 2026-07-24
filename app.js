@@ -12,6 +12,21 @@
   let tokenClient = null;
   let gtoken = null;
 
+  // 7 天內免重新登入：只在 localStorage 存過期戳（不存 access token 本身，因為它只活約 1 小時且存下有 XSS 風險）。
+  // 頁面載入或 access token 過期時，若戳未過期就走 GIS 的靜默續發（prompt: ""）拿新 token — 使用者感受上就是免登入。
+  const SESSION_KEY = "boxful_authz_expires_at";
+  const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  function sessionValid() {
+    const v = parseInt(localStorage.getItem(SESSION_KEY) || "0", 10);
+    return v > Date.now();
+  }
+  function markSession() {
+    try { localStorage.setItem(SESSION_KEY, String(Date.now() + SESSION_TTL_MS)); } catch (e) { /* localStorage 被禁用時忽略，僅退化為單次登入 */ }
+  }
+  function clearSession() {
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* 同上 */ }
+  }
+
   function initAuth() {
     if (!(window.google && google.accounts && google.accounts.oauth2)) { setTimeout(initAuth, 300); return; }
     try {
@@ -20,17 +35,36 @@
         // 除了讀 Sheets 之外，還需要 openid email 才能拿到當前登入者的 email 做白名單比對
         scope: "openid email https://www.googleapis.com/auth/spreadsheets.readonly",
         callback: function (resp) {
-          if (resp && resp.access_token) { gtoken = resp.access_token; Sheets.setToken(gtoken); authorizeAndLoad(); }
-          else { showLogin("登入未完成，請再試一次。"); }
+          if (resp && resp.access_token) {
+            gtoken = resp.access_token;
+            Sheets.setToken(gtoken);
+            markSession();          // 每次成功發 token 就把 7 天視窗往後推
+            authorizeAndLoad();
+          } else {
+            showLogin("登入未完成，請再試一次。");
+          }
         },
-        error_callback: function () { showLogin("登入被中斷或未授權，請再試一次。"); },
+        error_callback: function () {
+          // 靜默續發失敗（例如 Google 側撤銷授權、跨裝置登出）也會走這裡，此時 session 應視為失效
+          clearSession();
+          showLogin("登入被中斷或未授權，請再試一次。");
+        },
       });
     } catch (e) { showLogin("Google 登入初始化失敗：" + (e.message || e)); return; }
-    showLogin();
+    // 有 7 天內未過期的 session 就先靜默續發 access token；沒有才顯示登入畫面
+    if (sessionValid()) tokenClient.requestAccessToken({ prompt: "" });
+    else showLogin();
   }
   function signIn() {
     if (!tokenClient) { showLogin("Google 登入尚未就緒，請稍候再按一次。"); return; }
     tokenClient.requestAccessToken({ prompt: gtoken ? "" : "consent" });
+  }
+
+  // 401：access token 過期。7 天視窗還有效就靜默續發，否則要求重新登入。
+  function handleAuthError() {
+    gtoken = null;
+    if (sessionValid() && tokenClient) tokenClient.requestAccessToken({ prompt: "" });
+    else { clearSession(); showLogin("登入已過期，請重新登入。"); }
   }
   function showLogin(msg) {
     const node = document.createElement("div");
@@ -63,7 +97,7 @@
       })
       .catch(function (err) {
         setLoading(false);
-        if (err && err.code === 401) { gtoken = null; showLogin("登入已過期，請重新登入。"); }
+        if (err && err.code === 401) { handleAuthError(); }
         else { showError(err); }
       });
   }
@@ -79,7 +113,7 @@
         render();
       })
       .catch(function (err) {
-        if (err && err.code === 401) { gtoken = null; showLogin("登入已過期，請重新登入。"); }
+        if (err && err.code === 401) { handleAuthError(); }
         else { showError(err); }
       })
       .then(function () { setLoading(false); });
@@ -295,7 +329,13 @@
       '<p style="margin-top:12px"><button class="ai-btn" id="switch-btn">改用其他帳號登入</button></p>';
     showState(node);
     const b = document.getElementById("switch-btn");
-    if (b) b.onclick = function () { gtoken = null; signIn(); };
+    if (b) b.onclick = function () {
+      // 主動切換帳號：清掉 7 天視窗，強制彈 consent 讓使用者挑另一個帳號
+      clearSession();
+      gtoken = null;
+      if (tokenClient) tokenClient.requestAccessToken({ prompt: "consent" });
+      else showLogin();
+    };
   }
 
   /* ---------- 啟動 ---------- */
