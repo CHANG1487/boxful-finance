@@ -1,0 +1,12 @@
+# macOS metadata
+.DS_Store
+
+# Claude Code 的 worktree 目錄（背景 session 產出，不應進版控）
+.claude/worktrees/
+
+# 常見編輯器/OS 暫存
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
