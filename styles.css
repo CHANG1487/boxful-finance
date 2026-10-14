@@ -53,6 +53,7 @@ body{
 
 .card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);margin-bottom:18px;overflow:hidden}
 .chart{width:100%;height:440px}
+.chart.tall{height:600px}   /* 小倍數（多面板）圖表用 */
 
 /* ---- summary ---- */
 .summary{padding:16px 18px}

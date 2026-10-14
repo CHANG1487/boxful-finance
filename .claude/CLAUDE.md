@@ -29,7 +29,7 @@ python3 -m http.server 8000   # 然後開啟 http://localhost:8000
 | `charts.js` | `window.Charts` | 所有 ECharts option 產生器、規則式重點摘要、異常偵測。 |
 | `app.js` | （IIFE） | 登入、載入、分頁切換、KPI 渲染，以及決定各分頁顯示哪些卡片。 |
 
-外部 runtime 依賴由 `index.html` 直接透過 CDN 載入：ECharts 5.5.0 與 Google Identity Services。
+外部 runtime 依賴由 `index.html` 直接透過 CDN 載入：ECharts 5.5.0（jsDelivr，附 SRI `integrity` 雜湊）與 Google Identity Services。`index.html` 另有 CSP meta，新增任何外部來源都必須同步加進 CSP，升級 ECharts 必須同步更新 `integrity`。
 
 ### 試算表 → 資料模型（重要）
 
@@ -66,17 +66,17 @@ ECharts 實例快取於 `app.js` 的 `instances` 物件，透過 `setOption(...,
 
 ### 登入流程
 
-直接使用 **Google Identity Services**（`google.accounts.oauth2.initTokenClient`），不使用 `gapi.client`。權杖只放在記憶體中的 `gtoken`，每次呼叫 Sheets API 時透過 `Authorization: Bearer` 帶入。`Sheets.apiGet` 遇到 401 視為權杖過期並丟出 `{code: 401}`，由 `app.js` 攔截後交給 `handleAuthError()` 決定續發或重新登入（見下）。scope 為 `openid email https://www.googleapis.com/auth/spreadsheets.readonly` — 後兩者分別用來拿使用者 email（做應用層白名單）與唯讀讀取試算表。
+直接使用 **Google Identity Services**（`google.accounts.oauth2.initTokenClient`），不使用 `gapi.client`。權杖放在記憶體中的 `gtoken`（並快取於 sessionStorage，見下），每次呼叫 Sheets API 時透過 `Authorization: Bearer` 帶入。`Sheets.apiGet` 遇到 401 視為權杖過期並丟出 `{code: 401}`，由 `app.js` 攔截後交給 `handleAuthError()` 決定續發或重新登入（見下）。scope 為 `openid email https://www.googleapis.com/auth/spreadsheets.readonly` — 後兩者分別用來拿使用者 email（做應用層白名單）與唯讀讀取試算表。
 
 ### 重整頁面不掉線（Token 快取 + 7 天視窗）
 
 Google 給的 access token 本身只活約 1 小時。為了讓使用者「重整頁面不用重新登入」，實作採**兩層機制**：
 
-**主機制：`TOKEN_KEY` — access token 快取（`localStorage`）**
+**主機制：`TOKEN_KEY` — access token 快取（`sessionStorage`）**
 
-- 存 `{ token, expiresAt }` 到 `localStorage["boxful_gtoken"]`。
+- 存 `{ token, expiresAt }` 到 `sessionStorage["boxful_gtoken"]`（分頁關閉即清除；啟動時會順手清掉舊版殘留在 localStorage 的同名 key）。
 - `initAuth()` 頁面載入時**優先讀快取**：只要 token 未過期（有 30 秒 skew 緩衝）就直接用，**根本不打 Google**。這是重整不掉線的核心 —— 不依賴任何瀏覽器策略、不用第三方 Cookie、不用使用者手勢。
-- 為什麼可以存 token：本站為純靜態頁、無使用者輸入、無第三方腳本，XSS 面幾乎為零；scope 只有唯讀 Sheets + 使用者 email，實務風險可接受。
+- 為什麼可以存 token：所有外部文字拼進 HTML 前都經過 `esc()`、頁面有 CSP 與 SRI；scope 只有唯讀 Sheets + 使用者 email，token 約 1 小時失效。**不要改回 localStorage。**
 
 **加碼機制：`SESSION_KEY` — 7 天視窗戳（`localStorage`）**
 
@@ -95,7 +95,7 @@ Google 給的 access token 本身只活約 1 小時。為了讓使用者「重�
 
 ### 應用層權限白名單（重要）
 
-除了 Google Sheet 本身的分享權限之外，儀表板還有第二層 email 白名單，用於「試算表分享權限開得比較寬（例如整個公司網域可讀），但只有名單上的人可以看到儀表板」的情境。
+除了 Google Sheet 本身的分享權限之外，儀表板還有第二層 email 白名單。**這只是畫面層過濾，不是安全邊界**：比對在使用者瀏覽器執行，任何有試算表檢視權的人都能直接開試算表或呼叫 API 讀到全部資料。真正的權限控制只有 Google Sheet 的分享設定，請勿把分享開放給整個網域或「知道連結的人」。
 
 - 白名單來源：試算表內一張分頁，分頁名由 `CONFIG.AUTHZ_SHEET_TITLE`（預設 `"權限管理"`）指定。`Sheets.fetchAllowedEmails()` 讀進這張 sheet 的所有儲存格，用 email 正則（`/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/`）抽出所有 email 組成 `Set` — 也就是說 email 放在哪一欄、要不要 header 都沒關係。
 - 比對時機：`app.js` 的 `authorizeAndLoad()` 在拿到 OAuth token 之後、`load()` 之前執行。以 `Promise.all([fetchUserEmail(), fetchAllowedEmails()])` 平行取得使用者 email 與白名單，`email` 不在 `Set` 內就走 `showUnauthorized(email)` 分支、不進主資料抓取。
@@ -116,6 +116,9 @@ Google 給的 access token 本身只活約 1 小時。為了讓使用者「重�
 `Charts.anomalies(d)` 掃描收入、毛利，以及所有成本/費用明細，只針對**當年度**每個月，看是否偏離「前 `CONFIG.ANOMALY.baselineWindow` 個月的中位數」達到相對門檻（`relThreshold`）**且**絕對門檻（`absFloor`）。此外會把「基準為正、當月變負」偵測為符號翻轉，標成 `dir: "flip"` 並註記「疑似計提沖回/重分類」。結果先依金額變動排序取前 N 項，再重新依月份新→舊排序後回傳。
 
 ## 修改慣例
+
+- **任何外部文字拼進 HTML 前一律 `esc()`。** 來自試算表（科目名稱等）、API 回應、錯誤訊息、使用者 email 的字串，只要會進 `innerHTML` 或 ECharts tooltip `formatter`，都要先經過 `Charts.esc()`（`app.js` 內別名為 `esc`）。只有自己寫死的 HTML 標籤（如 `<b>`、`<br/>`）可以不跳脫。
+- **不要在 repo 放任何密鑰。** 本 repo 是公開的；OAuth Client ID 與試算表 ID 可公開，但 API key、Apps Script token、服務帳號金鑰等一律不可 commit。
 
 - **UI 文案為繁體中文。** 新增對使用者呈現的字串時，語氣與用詞請對齊既有字串（例如 `重點摘要`、`本期需說明`、`資料檢核`）。
 - **變數宣告一律使用 `const` / `let`，不要使用 `var`。** 預設用 `const`；只有需要重新指派才用 `let`。既有程式碼中殘留的 `var` 屬於歷史包袱，新增或修改到的區塊請一併換成 `const` / `let`。

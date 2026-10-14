@@ -27,6 +27,15 @@ window.Charts = (function () {
     return arr.some(function (p) { return lname.indexOf(String(p).toLowerCase()) === 0; });
   }
 
+  /* ---------- 安全：HTML 跳脫 ---------- */
+  // 任何來自試算表、API 回應或錯誤訊息的文字，要拼進 HTML（innerHTML、ECharts tooltip formatter）
+  // 之前一律先經過 esc()，避免有人在試算表儲存格填入 <script>/<img onerror> 之類內容造成 XSS。
+  function esc(v) {
+    return String(v === null || v === undefined ? "" : v).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
   /* ---------- 格式 ---------- */
   function money(n) {
     if (n === null || n === undefined || isNaN(n)) return "-";
@@ -124,10 +133,10 @@ window.Charts = (function () {
       tooltip: { trigger: "axis",
         valueFormatter: undefined,
         formatter: function (ps) {
-          let s = ps[0].axisValue + "<br/>";
+          let s = esc(ps[0].axisValue) + "<br/>";
           ps.forEach(function (p) {
             const v = (p.seriesName.indexOf("EBITDA%") >= 0) ? pct(p.value) : money(p.value);
-            s += p.marker + p.seriesName + "：<b>" + v + "</b><br/>";
+            s += p.marker + esc(p.seriesName) + "：<b>" + v + "</b><br/>";
           });
           return s;
         } },
@@ -191,10 +200,10 @@ window.Charts = (function () {
                 textStyle: { color: C.muted, fontSize: 11 } },
       tooltip: { trigger: "axis", axisPointer: { type: "shadow" },
         formatter: function (ps) {
-          let s = ps[0].axisValue + "<br/>";
+          let s = esc(ps[0].axisValue) + "<br/>";
           ps.forEach(function (p) {
             const v = (p.seriesName === "訂單數") ? money(p.value) + " 筆" : money(p.value);
-            s += p.marker + p.seriesName + "：<b>" + v + "</b><br/>";
+            s += p.marker + esc(p.seriesName) + "：<b>" + v + "</b><br/>";
           });
           return s;
         } },
@@ -377,10 +386,10 @@ window.Charts = (function () {
       legend: { top: 34, left: 8, textStyle: { color: C.muted, fontSize: 12 } },
       tooltip: { trigger: "axis",
         formatter: function (ps) {
-          let s = ps[0].axisValue + "<br/>";
+          let s = esc(ps[0].axisValue) + "<br/>";
           ps.forEach(function (p) {
             const v = p.seriesName === "費用率" ? (p.value == null ? "-" : p.value + "%") : money(p.value);
-            s += p.marker + p.seriesName + "：<b>" + v + "</b><br/>";
+            s += p.marker + esc(p.seriesName) + "：<b>" + v + "</b><br/>";
           });
           return s;
         } },
@@ -486,7 +495,7 @@ window.Charts = (function () {
         formatter: function (ps) {
           const p = ps.find(function (q) { return q.value != null && q.seriesName !== "基準"; }) ||
                     ps.find(function (q) { return q.seriesName === "基準" && q.value != null; });
-          return ps[0].axisValue + "：<b>" + (p ? money(p.value) : "-") + "</b>";
+          return esc(ps[0].axisValue) + "：<b>" + (p ? money(p.value) : "-") + "</b>";
         } },
       xAxis: { type: "category", data: cats, axisLine: { lineStyle: { color: "#C7CFD2" } },
                axisLabel: { color: C.muted, rotate: 20, fontSize: 11, interval: 0 } },
@@ -659,7 +668,7 @@ window.Charts = (function () {
     if (revL != null) {
       const mom = pctChange(revL, revP);
       const yoy = pctChange(revL, revY);
-      out.push(latest.label + " 收入 <b>" + money(revL) + "</b>" +
+      out.push(esc(latest.label) + " 收入 <b>" + money(revL) + "</b>" +
         (mom != null ? "，較上月 <b>" + signPctStr(mom) + "</b>" : "") +
         (yoy != null ? "、較去年同月 <b>" + signPctStr(yoy) + "</b>" : "") + "。");
     }
@@ -690,30 +699,30 @@ window.Charts = (function () {
     // 營業轉虧警示（毛利 - 費用）
     const opexL = v(d.opex, li);
     if (gpL != null && opexL != null && (gpL - opexL) < 0) {
-      out.push("⚠️ " + latest.label + " 營業損益為負：毛利 " + money(gpL) + " 未能覆蓋費用 " + money(opexL) +
+      out.push("⚠️ " + esc(latest.label) + " 營業損益為負：毛利 " + money(gpL) + " 未能覆蓋費用 " + money(opexL) +
         "（約 " + money(gpL - opexL) + "）。");
     }
     // 成本變化最大科目
     const cm = biggestMover(d.cogsItems, li, pi);
-    if (cm && cm.delta !== 0) out.push("成本變動最大：<b>" + cm.name + "</b> " + signMoney(cm.delta) +
+    if (cm && cm.delta !== 0) out.push("成本變動最大：<b>" + esc(cm.name) + "</b> " + signMoney(cm.delta) +
       (cm.pct != null ? "（較上月 " + signPctStr(cm.pct) + "）" : "") + "。");
     // 費用變化最大科目（排除折舊）
     const expItems = d.opexItems.filter(function (it) { return !excludedExpense(it.name); });
     const em = biggestMover(expItems, li, pi);
-    if (em && em.delta !== 0) out.push("費用變動最大：<b>" + em.name + "</b> " + signMoney(em.delta) +
+    if (em && em.delta !== 0) out.push("費用變動最大：<b>" + esc(em.name) + "</b> " + signMoney(em.delta) +
       (em.pct != null ? "（較上月 " + signPctStr(em.pct) + "）" : "") + "。");
     // 最大成本佔比
     const totC = v(d.cogs, li);
     if (totC && d.cogsItems.length) {
       const top = d.cogsItems.slice().sort(function (a, b) { return b.values[li] - a.values[li]; })[0];
-      if (top) out.push("最大成本項為 <b>" + top.name + "</b>，佔本月總成本 " +
+      if (top) out.push("最大成本項為 <b>" + esc(top.name) + "</b>，佔本月總成本 " +
         (top.values[li] / totC * 100).toFixed(0) + "%。");
     }
     return out;
   }
 
   return {
-    money: money, pct: pct, summary: summary, anomalies: anomalies,
+    esc: esc, money: money, pct: pct, summary: summary, anomalies: anomalies,
     pnlOption: pnlOption, revCostOption: revCostOption, gpExpOption: gpExpOption,
     ratesOption: ratesOption, perOrderOption: perOrderOption, waashipOption: waashipOption, expenseRatioOption: expenseRatioOption,
     costMix100Option: costMix100Option, ebitdaBridgeOption: ebitdaBridgeOption, contributionOption: contributionOption,

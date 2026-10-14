@@ -7,47 +7,55 @@
   const instances = {};              // ECharts 實例
 
   const $ = function (s) { return document.querySelector(s); };
+  // HTML 跳脫（定義在 charts.js）。凡是來自試算表／API／錯誤訊息的文字要拼進 innerHTML，都要先 esc()
+  const esc = Charts.esc;
 
   /* ---------- Google 登入（OAuth） ---------- */
   let tokenClient = null;
   let gtoken = null;
 
   // 登入持久化：兩層機制
-  //   1) TOKEN_KEY：把 access token 連同過期時間存進 localStorage。只要 token 未過期
-  //      （約 1 小時），重整頁面完全不用打 Google，直接沿用 → 這是「重整不掉線」的主機制。
+  //   1) TOKEN_KEY：把 access token 連同過期時間存進 sessionStorage。只要 token 未過期
+  //      （約 1 小時），同一個分頁重整完全不用打 Google，直接沿用 → 這是「重整不掉線」的主機制。
+  //      用 sessionStorage 而非 localStorage：分頁關閉即清除，token 不會長期留在電腦上。
   //   2) SESSION_KEY：7 天視窗戳。當 token 過期時嘗試 GIS 靜默續發；靜默續發失敗才回到
   //      登入畫面。靜默續發常因瀏覽器封鎖第三方 Cookie 或缺乏使用者手勢而失敗，因此
   //      不能作為唯一機制，只作為 token 過期後的加碼嘗試。
-  // 安全考量：本站為純靜態頁、無使用者輸入、無第三方腳本，XSS 風險極低；scope 僅為
-  // 唯讀 Sheets + 使用者 email，存 token 的實務風險可接受。
+  // 安全考量：所有拼進 HTML 的外部文字都經過 esc()，index.html 另有 CSP 與 SRI 保護；
+  // scope 僅為唯讀 Sheets + 使用者 email，token 約 1 小時失效。session 視窗戳只存時間、不存 token。
   const TOKEN_KEY = "boxful_gtoken";
   const SESSION_KEY = "boxful_authz_expires_at";
   const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   const TOKEN_SKEW_MS = 30 * 1000;
 
+  // 舊版曾把 token 存在 localStorage，這裡順手清掉殘留
+  try { localStorage.removeItem(TOKEN_KEY); } catch (e) { /* 忽略 */ }
+
   function readCachedToken() {
     try {
-      const raw = localStorage.getItem(TOKEN_KEY);
+      const raw = sessionStorage.getItem(TOKEN_KEY);
       if (!raw) return null;
       const obj = JSON.parse(raw);
       if (!obj || !obj.token || !obj.expiresAt) return null;
       // 留 30 秒緩衝，避免拿到「馬上就要過期」的 token 去打 API
-      if (Date.now() + TOKEN_SKEW_MS >= obj.expiresAt) { localStorage.removeItem(TOKEN_KEY); return null; }
+      if (Date.now() + TOKEN_SKEW_MS >= obj.expiresAt) { sessionStorage.removeItem(TOKEN_KEY); return null; }
       return obj.token;
     } catch (e) { return null; }
   }
   function writeCachedToken(token, expiresInSec) {
     try {
       const expiresAt = Date.now() + (Number(expiresInSec) || 3600) * 1000;
-      localStorage.setItem(TOKEN_KEY, JSON.stringify({ token: token, expiresAt: expiresAt }));
-    } catch (e) { /* localStorage 被禁用時忽略，僅退化為單次登入 */ }
+      sessionStorage.setItem(TOKEN_KEY, JSON.stringify({ token: token, expiresAt: expiresAt }));
+    } catch (e) { /* 儲存空間被禁用時忽略，僅退化為單次登入 */ }
   }
   function clearCachedToken() {
-    try { localStorage.removeItem(TOKEN_KEY); } catch (e) { /* 同上 */ }
+    try { sessionStorage.removeItem(TOKEN_KEY); } catch (e) { /* 同上 */ }
   }
   function sessionValid() {
-    const v = parseInt(localStorage.getItem(SESSION_KEY) || "0", 10);
-    return v > Date.now();
+    try {
+      const v = parseInt(localStorage.getItem(SESSION_KEY) || "0", 10);
+      return v > Date.now();
+    } catch (e) { return false; }
   }
   function markSession() {
     try { localStorage.setItem(SESSION_KEY, String(Date.now() + SESSION_TTL_MS)); } catch (e) { /* 同上 */ }
@@ -112,7 +120,7 @@
     node.className = "state";
     node.innerHTML =
       "<h2>請以公司 Google 帳號登入</h2>" +
-      "<p>本儀表板僅供已授權的 BOXFUL 帳號檢視。" + (msg ? "<br/><b style='color:var(--danger)'>" + msg + "</b>" : "") + "</p>" +
+      "<p>本儀表板僅供已授權的 BOXFUL 帳號檢視。" + (msg ? "<br/><b style='color:var(--danger)'>" + esc(msg) + "</b>" : "") + "</p>" +
       '<p style="margin-top:14px"><button class="ai-btn" id="signin-btn" style="font-size:14px;padding:9px 18px">使用 Google 登入</button></p>';
     showState(node);
     const b = document.getElementById("signin-btn");
@@ -121,6 +129,8 @@
 
   /* ---------- 授權檢查 + 載入 ---------- */
   // 登入取得 token 後：先拿使用者 email → 讀「權限管理」sheet 白名單 → 比對；通過才進入 load()
+  // 注意：這是「畫面層」的過濾，不是安全邊界。有試算表檢視權的人仍可直接開試算表讀資料，
+  // 真正的權限控制是 Google Sheet 本身的分享設定（只分享給需要看的人或群組）。
   function authorizeAndLoad() {
     if (!gtoken) { showLogin(); return; }
     setLoading(true);
@@ -195,7 +205,7 @@
     box.classList.remove("hidden");
     box.innerHTML =
       '<div class="sum-head"><span class="sum-badge">重點摘要</span>' +
-      '<span class="sum-sub">依「' + seg.label + '」最新月自動產生</span></div>' +
+      '<span class="sum-sub">依「' + esc(seg.label) + '」最新月自動產生</span></div>' +
       "<ul>" + bullets.map(function (b) { return "<li>" + b + "</li>"; }).join("") + "</ul>";
   }
 
@@ -209,20 +219,20 @@
     const cls = { up: "exc-up", down: "exc-down", flip: "exc-flip" };
     const rows = flags.map(function (f) {
       return "<tr>" +
-        "<td class='num'>" + f.month + "</td>" +
-        "<td>" + f.name + "</td>" +
+        "<td class='num'>" + esc(f.month) + "</td>" +
+        "<td>" + esc(f.name) + "</td>" +
         "<td class='num'>" + Charts.money(f.value) + "</td>" +
         "<td class='num'>" + Charts.money(f.base) + "</td>" +
-        "<td class='" + cls[f.dir] + "'>" + icon[f.dir] + " " + f.rel + "</td>" +
-        "<td>" + f.note + "</td></tr>";
+        "<td class='" + cls[f.dir] + "'>" + icon[f.dir] + " " + esc(f.rel) + "</td>" +
+        "<td>" + esc(f.note) + "</td></tr>";
     }).join("");
     box.innerHTML =
       '<div class="sum-head"><span class="sum-badge" style="background:#C0392B">本期需說明</span>' +
-      '<span class="sum-sub">「' + seg.label + '」自動偵測 · 偏離近 6 月基準 ±' +
+      '<span class="sum-sub">「' + esc(seg.label) + '」自動偵測 · 偏離近 6 月基準 ±' +
       Math.round((CONFIG.ANOMALY.relThreshold || 0.4) * 100) + "% 以上，依金額排序</span></div>" +
       '<div class="exc-wrap"><table class="exc">' +
       "<thead><tr><th>月份</th><th>科目</th><th>當月值</th><th>近期基準</th><th>偏離</th><th>判讀</th></tr></thead>" +
-      "<tbody>" + rows + "</tbody></table>";
+      "<tbody>" + rows + "</tbody></table></div>";
   }
 
   /* ---------- KPI ---------- */
@@ -314,7 +324,7 @@
       const status = ok ? '<span class="ok">✓ 已定位</span>'
         : (isOrders ? '<span class="warn">未找到（本分頁不畫）</span>'
                     : '<span class="warn">✗ 未找到</span>');
-      return "<tr><td>" + label + "</td><td>" + name + '</td><td class="num">' + lastVal + "</td><td>" + status + "</td></tr>";
+      return "<tr><td>" + esc(label) + "</td><td>" + esc(name) + '</td><td class="num">' + lastVal + "</td><td>" + status + "</td></tr>";
     }
     const rows = [
       row("收入 (Total Income)", d.revenue),
@@ -327,7 +337,7 @@
 
     const monthSpan = d.months.length ? (d.months[0].label + " – " + d.months[d.months.length - 1].label) : "—";
     $("#check-body").innerHTML =
-      '<p style="color:var(--muted);margin:2px 0 12px">月份範圍：<b class="num">' + monthSpan +
+      '<p style="color:var(--muted);margin:2px 0 12px">月份範圍：<b class="num">' + esc(monthSpan) +
       "</b>（共 " + d.months.length + " 個月）　成本明細 " + d.cogsItems.length +
       " 項、費用明細 " + d.opexItems.length + " 項（圖表取前 " + CONFIG.TOP_N + " 大）</p>" +
       '<table><thead><tr><th>指標</th><th>對應到的列</th><th>最新月值</th><th>狀態</th></tr></thead><tbody>' +
@@ -345,7 +355,7 @@
     const node = document.createElement("div");
     node.className = "state";
     node.innerHTML =
-      "<h2>抓不到資料</h2><p>" + msg + "</p>" +
+      "<h2>抓不到資料</h2><p>" + esc(msg) + "</p>" +
       "<p>請依序檢查：</p><ul>" +
       "<li>登入的 Google 帳號<b>有這份試算表的檢視權限</b>（向擁有者索取檢視權）。</li>" +
       "<li>GCP 專案已<b>啟用 Google Sheets API</b>。</li>" +
@@ -364,8 +374,8 @@
     node.className = "state";
     node.innerHTML =
       "<h2>此帳號未獲授權</h2>" +
-      "<p>目前登入帳號：<b>" + (email || "(未知)") + "</b></p>" +
-      "<p>此帳號未列於試算表的「" + (CONFIG.AUTHZ_SHEET_TITLE || "權限管理") + "」白名單，無法檢視儀表板。" +
+      "<p>目前登入帳號：<b>" + esc(email || "(未知)") + "</b></p>" +
+      "<p>此帳號未列於試算表的「" + esc(CONFIG.AUTHZ_SHEET_TITLE || "權限管理") + "」白名單，無法檢視儀表板。" +
       "若你認為這是誤判，請聯繫試算表擁有者將此 email 加入白名單。</p>" +
       '<p style="margin-top:12px"><button class="ai-btn" id="switch-btn">改用其他帳號登入</button></p>';
     showState(node);
